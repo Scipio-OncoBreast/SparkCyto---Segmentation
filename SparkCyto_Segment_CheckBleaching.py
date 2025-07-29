@@ -5,10 +5,12 @@ import matplotlib.pyplot as plt
 import random
 import os
 import pandas as pd
+import seaborn as sns 
 
+from natsort import natsorted
 from time import time
 from cellpose import models
-from tkinter.filedialog import askopenfilenames, askdirectory
+from tkinter.filedialog import askdirectory
 from skimage.filters import gaussian
 from skimage.measure import regionprops_table
 def scramble(mask):
@@ -62,9 +64,9 @@ FLAG_DF = True
 FLAG_TIME = True
 for acq in df['Acquisition Name'].unique():
     df_acq = df[df['Acquisition Name'] == acq]
-    for well in df_acq['Well'].unique():
+    for well in natsorted(df_acq['Well'].unique()):
         df_acq_well = df_acq[df_acq['Well'] == well]
-        for time_point in df_acq_well['Time Point #'].unique():
+        for time_point in natsorted(df_acq_well['Time Point #'].unique()):
             t0 = time()
             df_tmp = df_acq_well[df_acq_well['Time Point #'] == time_point]
             print(f'Processing {acq} - {well} - Time Point {time_point}...', end=' ')
@@ -80,15 +82,15 @@ for acq in df['Acquisition Name'].unique():
                 img_mod = tifffile.imread(df_tmp[df_tmp['ID Acquisition - Mode'] == Acquisition_Mode]['Filename'].iloc[0])
                 img_mod = img_mod - gaussian(img_mod, sigma=BKG_sigma_gauss,preserve_range=True)  # Apply Gaussian filter to the image
                 img_mod[img_mod < 0] = 0  # Ensure no negative values after filtering
-                params[Acquisition_Mode + '- Mean'] = []
-                params[Acquisition_Mode + '- Median'] = []
-                params[Acquisition_Mode + '- Max'] = []
+                params['Int - Mean'] = []
+                params['Int - Median'] = []
+                params['Int - Max'] = []
                 for cell in range(1, Cell_Number + 1):
                     mask_cell = (masks == cell)
                     int_val = img_mod[mask_cell]
-                    params[Acquisition_Mode + '- Mean'].append(np.mean(int_val))
-                    params[Acquisition_Mode + '- Median'].append(np.median(int_val))
-                    params[Acquisition_Mode + '- Max'].append(np.max(int_val))
+                    params['Int - Mean'].append(np.mean(int_val))
+                    params['Int - Median'].append(np.median(int_val))
+                    params['Int - Max'].append(np.max(int_val))
             params_df = pd.DataFrame(params)
             params_df['Acquisition Name'] = acq
             params_df['Well'] = well
@@ -119,23 +121,37 @@ df_final.to_csv(os.path.join(DirMethod, 'Cellpose_Segmentation_Results.csv'), in
 np.save(os.path.join(DirMethod, 'Cellpose_Segmentation_Params.npy'), Params_Dict)
    
 # %%
-import seaborn as sns 
-from natsort import natsorted
-
-
 time_points = natsorted(df_final['Time Point #'].unique())
-mean_int = []
-for time_point in time_points:
-    df_tmp = df_final[df_final['Well'] == 'B1']
-    mean_int.append(df_tmp[df_tmp['Time Point #'] == time_point]['B- Mean'].median())
-x = [int(tp) for tp in time_points]
-y = mean_int
-lin_fit = np.polyfit(x, y, 1)
-plt.figure(figsize=(10, 6))
-plt.plot(x, y, '-o', color='b')
-plt.plot(x, np.polyval(lin_fit, x), '--', color='r')
-plt.text(0.55, 0.95, 
-         f'Linear Fit: y = {lin_fit[0]:.2f}x + {lin_fit[1]:.2f}', 
-         transform=plt.gca().transAxes, fontsize=12)
-
+for name in df_final['Acquisition Name'].unique():
+    fig, ax = plt.subplots(1,2,figsize=(10, 6))
+    df1 = df_final[df_final['Acquisition Name'] == name]
+    wells = natsorted(df1['Well'].unique())
+    y_all = np.zeros((len(time_points),len(wells)))
+    for cnt_wells,well in enumerate(wells):
+        mean_int = []
+        for time_point in time_points:
+            df_tmp = df1[(df1['Well'] == well) & (df1['Time Point #'] == time_point)]
+            mean_int.append(df_tmp[df_tmp['Time Point #'] == time_point]['Int - Mean'].median())
+            x = [int(tp) for tp in time_points]
+        y = mean_int
+        y_all[:,cnt_wells] = y
+        ax[0].plot(x, y, '-o', label = well)
+        ax[0].set_xlabel('Time Point')
+        ax[0].set_ylabel('Mean Intensity')
+    ax[1].errorbar(x, np.mean(y_all, axis=1), yerr=np.std(y_all, axis=1), fmt='o', color='black', label='Mean ± Std Dev')
+    lin_fit = np.polyfit(x, np.mean(y_all, axis=1), 1)
+    drop_percent = np.round((1-np.polyval(lin_fit, x[-1])/np.polyval(lin_fit, x[0]))*100,2)
+    ax[1].plot(x, np.polyval(lin_fit, x), '--r', label = well + '- Fit')
+    ax[1].set_xlabel('Time Point')
+    ax[1].set_ylabel('Mean Intensity')
+    ax[0].set_title('Single wells')
+    ax[1].set_title('Fit results: y = {:.2f}x + {:.2f}'.format(lin_fit[0], lin_fit[1]))
+    ax[1].set_ylim(0, np.max(np.mean(y_all, axis=1)) * 1.1)
+    ax[0].legend()
+    ax[1].legend()
+    plt.suptitle(f'Mean Intensity for {name} - Drop: {drop_percent}%')
+    plt.tight_layout()
+    plt.savefig(os.path.join(DirMethod, f'{name}_Mean_Intensity.png'), dpi=300)
+    plt.show()
+    
 # %%
